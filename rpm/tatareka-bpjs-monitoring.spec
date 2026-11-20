@@ -63,6 +63,13 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/%{name}
 
 %changelog
+* Fri Nov 20 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112003
+- bpjs_mon's login file is read with --defaults-file, so only it counts (1.0.0-26112002 let a [client] login in root's
+  /root/.my.cnf override it).
+* Fri Nov 20 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112002
+- The read-only account bpjs_mon keeps its login in /etc/tatareka-bpjs-monitoring/mysql.cnf (root only) instead of a
+  section of root's own /root/.my.cnf; setup.sh install moves an existing [clientbpjsmon] there.
+- Dashboard: the "Dicek ke BPJS" column is wide enough for its date.
 * Fri Nov 20 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112001
 - First release, split out of tatareka-ai-klaim (Aris 2026-11-20). Two parts:
 - BPJS status refresh: every night at 01:00, if a staff computer has called BPJS through SIMGOS in the last 24 hours,

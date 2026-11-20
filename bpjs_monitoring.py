@@ -42,6 +42,9 @@ import sys
 import time
 import urllib.request
 
+LOGIN = "/etc/tatareka-bpjs-monitoring/mysql.cnf"   # bpjs_mon's login ([clientbpjsmon])
+MYSQL = ["mysql"] + (["--defaults-file=" + LOGIN] if os.path.exists(LOGIN) else [])
+
 STATE_DIR = os.environ.get("BPJS_MON_STATE", "/var/lib/tatareka-bpjs-monitoring")        # env: tests only
 SIMGOS_WS = os.environ.get("BPJS_MON_SIMGOS_WS", "http://127.0.0.1/webservice/bpjservice/")  # env: tests only
 CONF = "/etc/tatareka-bpjs-monitoring/monitoring.ini"
@@ -62,9 +65,9 @@ def setting(key, default):
 
 
 def sql(q):
-    """SIMGOS, read-only, as bpjs_mon (/root/.my.cnf [clientbpjsmon], written by setup.sh)."""
+    """SIMGOS, read-only, as bpjs_mon (LOGIN, written by setup.sh)."""
     env = dict(os.environ, MYSQL_GROUP_SUFFIX=os.environ.get("MYSQL_GROUP_SUFFIX") or "bpjsmon")
-    r = subprocess.run(["mysql", "-N", "-B", "-e", q], capture_output=True, text=True, env=env)
+    r = subprocess.run(MYSQL + ["-N", "-B", "-e", q], capture_output=True, text=True, env=env)
     if r.returncode:
         raise RuntimeError("SIMGOS: " + r.stderr.strip()[:300])
     return [[None if c == "NULL" else c for c in line.split("\t")] for line in r.stdout.splitlines()]
