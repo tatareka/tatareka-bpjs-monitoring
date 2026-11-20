@@ -21,8 +21,6 @@ User SIMGOS akan melihat **Monitoring › Dashboard Klaim BPJS** setelah login u
 
 - Setiap malam jam 01.00, SIMGOS mengecek ke BPJS status klaim final 180 hari terakhir yang belum disetujui.
 - Jalan di server SIMGOS, bukan di PC petugas.
-- Tidak jalan di server copy (testing/development): paket hanya jalan kalau dalam 24 jam terakhir ada PC petugas yang
-  pakai fitur BPJS lewat SIMGOS (SEP, cek peserta, dll), tanda itu server production.
 - Tidak menyimpan credential BPJS: call ke BPJS dilakukan oleh SIMGOS dengan akses rumah sakit.
 - Akses database read-only (user `bpjs_mon`).
 
