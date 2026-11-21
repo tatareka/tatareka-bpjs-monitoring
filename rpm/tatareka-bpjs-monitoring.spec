@@ -63,6 +63,9 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/%{name}
 
 %changelog
+* Sat Nov 21 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112102
+- The read-only account bpjs_mon connects the way SIMGOS does: host, port and socket from SIMGOS's local.php, account
+  host as the database server sees this server (was always 'bpjs_mon'@'localhost'). A working account is left as it is.
 * Sat Nov 21 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112101
 - SIMGOS access right DASHBOARD KLAIM BPJS (909802, PLUGINS > TATAREKA KLAIM): only users who hold it see the menu
   item, and api.php answers 403 without it. First install gives it to the Admin SIMRS users who can open Monitoring;

@@ -36,37 +36,64 @@ say() { echo "tatareka-bpjs-monitoring: $*"; }
 ADMIN=""
 cleanup() { case "$ADMIN" in /*) rm -f "$ADMIN";; esac; }
 trap cleanup EXIT
-mycnf() {   # user password host port -> temporary options file (mode 600)
+ASK_ROOT=1; ADMIN_SRC=""
+mycnf() {   # user password host port socket -> temporary options file (mode 600)
   local f; f=$(mktemp /tmp/ttrk-my.XXXXXX) || return 1
-  python3 - "$f" "$@" <<'PY'
+  python3 - "$f" "$@" <<'PY2'
 import sys
-f, user, pw, host, port = sys.argv[1:6]
+f, user, pw, host, port, sock = (sys.argv[1:7] + [""] * 6)[:6]
 q = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
 lines = ["[client]", "user=" + q(user), "password=" + q(pw)]
-if host: lines.append("host=" + q(host))
-if port: lines.append("port=" + port)
+if sock and host in ("", "localhost"): lines += ["host=localhost", "socket=" + q(sock)]
+elif host: lines.append("host=" + q(host))
+if port and host not in ("", "localhost"): lines.append("port=" + port)
 open(f, "w").write("\n".join(lines) + "\n")
-PY
+PY2
   echo "$f"
+}
+# SIMGOS's own database connection from local.php (SIMpelAdapter): user, password, host, port, socket, one per line.
+# A socket is filled in when SIMGOS connects through one: unix_socket / dsn in local.php, else for host localhost the
+# socket PHP itself uses (pdo_mysql.default_socket), else the usual places.
+simgos_login() {
+  php -r '$c = @include $argv[1]; $a = $c["db"]["adapters"]["SIMpelAdapter"] ?? [];
+    $h = $a["hostname"] ?? ""; $p = (string) ($a["port"] ?? ""); $s = $a["unix_socket"] ?? "";
+    if (!empty($a["dsn"]) && preg_match_all("/(host|port|unix_socket)=([^;]+)/", $a["dsn"], $m, PREG_SET_ORDER))
+      foreach ($m as $x) { if ($x[1] == "host") $h = $x[2]; elseif ($x[1] == "port") $p = $x[2]; else $s = $x[2]; }
+    if ($s === "" && ($h === "" || $h === "localhost"))
+      foreach ([ini_get("pdo_mysql.default_socket"), "/var/lib/mysql/mysql.sock", "/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock", "/tmp/mysql.sock"] as $c2)
+        if ($c2 && file_exists($c2)) { $s = $c2; break; }
+    echo implode("\n", [$a["username"] ?? "", $a["password"] ?? "", $h, $p, $s]), "\n";' "$WS_CONF" 2>/dev/null
+}
+# Where root's own MySQL login connects (host, port, socket; never its password)
+own_endpoint() {
+  local o h="" p="" k=""
+  o=$(my_print_defaults client mysql 2>/dev/null) || o=""
+  h=$(sed -n 's/^--host=//p' <<< "$o" | tail -1); p=$(sed -n 's/^--port=//p' <<< "$o" | tail -1)
+  k=$(sed -n 's/^--socket=//p' <<< "$o" | tail -1)
+  printf '%s\n%s\n%s\n' "$h" "$p" "$k"
 }
 admin() {
   [ -n "$ADMIN" ] && { [ "$ADMIN" != - ]; return; }
-  if mysql -N -e "SELECT 1" >/dev/null 2>&1; then ADMIN=own; return 0; fi
-  local f u
-  u=$(php -r '$c = @include $argv[1]; $a = $c["db"]["adapters"]["SIMpelAdapter"] ?? [];
-      echo implode("\n", [$a["username"] ?? "", $a["password"] ?? "", $a["hostname"] ?? "", $a["port"] ?? ""]);' \
-      "$WS_CONF" 2>/dev/null)
+  # root's own login is used only when it reaches the same MySQL server as SIMGOS's own connection (local.php)
+  local f="" u sid="" own=""
+  local SID="SELECT CONCAT(@@hostname, ':', @@port, ':', @@datadir)"
+  u=$(simgos_login)
   if [ -n "$(sed -n 1p <<< "$u")" ] &&
-     f=$(mycnf "$(sed -n 1p <<< "$u")" "$(sed -n 2p <<< "$u")" "$(sed -n 3p <<< "$u")" "$(sed -n 4p <<< "$u")"); then
-    if mysql --defaults-file="$f" -N -e "SELECT 1" >/dev/null 2>&1; then ADMIN=$f; return 0; fi
-    rm -f "$f"
+     f=$(mycnf "$(sed -n 1p <<< "$u")" "$(sed -n 2p <<< "$u")" "$(sed -n 3p <<< "$u")" "$(sed -n 4p <<< "$u")" "$(sed -n 5p <<< "$u")"); then
+    sid=$(mysql --defaults-file="$f" -N -B -e "$SID" 2>/dev/null) || sid=""
+    [ -n "$sid" ] || { rm -f "$f"; f=""; }
   fi
-  if [ -t 0 ]; then
+  own=$(mysql -N -B -e "$SID" 2>/dev/null) || own=""
+  if [ -n "$own" ] && { [ -z "$sid" ] || [ "$own" = "$sid" ]; }; then
+    [ -n "$f" ] && rm -f "$f"; ADMIN=own; ADMIN_SRC="root's MySQL login"; return 0
+  fi
+  if [ -n "$f" ]; then ADMIN=$f; ADMIN_SRC="SIMGOS's database login ($(sed -n 1p <<< "$u"), from local.php)"; return 0; fi
+  if [ $ASK_ROOT = 1 ] && [ -t 0 ]; then
     local pw
     read -r -s -p "MySQL root password (used once for setup, not saved): " pw; echo
-    if [ -n "$pw" ] && f=$(mycnf root "$pw" localhost ""); then
-      if mysql --defaults-file="$f" -N -e "SELECT 1" >/dev/null 2>&1; then ADMIN=$f; return 0; fi
-      rm -f "$f"
+    if [ -n "$pw" ] && f=$(mycnf root "$pw" "$(sed -n 3p <<< "$u")" "$(sed -n 4p <<< "$u")" "$(sed -n 5p <<< "$u")"); then
+      if mysql --defaults-file="$f" -N -e "SELECT 1" >/dev/null 2>&1; then ADMIN=$f; ADMIN_SRC="the MySQL root password"; return 0; fi
+      rm -f "$f"; say "that MySQL root password did not work"
     fi
   fi
   ADMIN=-; return 1
@@ -98,24 +125,63 @@ PY2
   say "bpjs_mon: login moved from /root/.my.cnf to $LOGIN"
 }
 
+# Candidate endpoints for bpjs_mon, best first, as "host|port|socket|where" (not tab: bash merges empty tab-separated fields): SIMGOS's own connection
+# (local.php: what the application really uses), then root's own login. Each ends up tested by connecting as bpjs_mon.
+ro_endpoints() {
+  local u e
+  u=$(simgos_login)
+  [ -n "$(sed -n 1p <<< "$u")" ] && printf '%s|%s|%s|%s\n' "$(sed -n 3p <<< "$u")" "$(sed -n 4p <<< "$u")" "$(sed -n 5p <<< "$u")" "SIMGOS's connection (local.php)"
+  e=$(own_endpoint)
+  printf '%s|%s|%s|%s\n' "$(sed -n 1p <<< "$e")" "$(sed -n 2p <<< "$e")" "$(sed -n 3p <<< "$e")" "root's MySQL login"
+}
+
+# How the database server sees a client that connects through this endpoint (the host part of an account), asked
+# over that endpoint: with SIMGOS's login when it is that endpoint's, else with the admin login if it uses it.
+client_host() {   # host port socket
+  local u f h=""
+  u=$(simgos_login)
+  if [ -n "$(sed -n 1p <<< "$u")" ] && f=$(mycnf "$(sed -n 1p <<< "$u")" "$(sed -n 2p <<< "$u")" "$1" "$2" "$3"); then
+    h=$(mysql --defaults-file="$f" -N -B -e "SELECT SUBSTRING_INDEX(USER(), '@', -1)" 2>/dev/null); rm -f "$f"
+  fi
+  [ -z "$h" ] && h=$(db -e "SELECT SUBSTRING_INDEX(USER(), '@', -1)" 2>/dev/null)
+  echo "$h"
+}
+
 install_account() {
   login_move
   if account_ok; then say "read-only account bpjs_mon works (unchanged)"; return 0; fi
-  local pw="Bm_$(openssl rand -hex 12)-Ro7" err   # no '#': it starts a comment in an option file
-  if ! err=$(db 2>&1 <<SQL
-CREATE USER IF NOT EXISTS 'bpjs_mon'@'localhost' IDENTIFIED BY '$pw';
-ALTER USER 'bpjs_mon'@'localhost' IDENTIFIED BY '$pw';
-GRANT SELECT ON inacbg.grouping TO 'bpjs_mon'@'localhost';
-GRANT SELECT ON inacbg.hasil_grouping TO 'bpjs_mon'@'localhost';
-GRANT SELECT (TGL_REQUEST, ACCESS_FROM_IP) ON logs.bridge_log TO 'bpjs_mon'@'localhost';
-GRANT SELECT ON bpjs.klaim TO 'bpjs_mon'@'localhost';
+  admin || { say "no MySQL login to create the read-only account bpjs_mon: run $APP/setup.sh install in a terminal and enter the MySQL root password when asked"; return 1; }
+  local pw="Bm_$(openssl rand -hex 12)-Ro7" err="" host port sock where h a tried=""   # no '#' in pw: a comment in an option file
+  while IFS='|' read -r host port sock where; do
+    [ -n "$where" ] || continue
+    case "$tried" in *"|$host:$port:$sock|"*) continue ;; esac; tried="$tried|$host:$port:$sock|"
+    h=$(client_host "$host" "$port" "$sock")
+    [ -n "$h" ] || { err="the database could not be reached through $where"; continue; }
+    a="'bpjs_mon'@'$h'"
+    if ! err=$(db 2>&1 <<SQL
+CREATE USER IF NOT EXISTS $a IDENTIFIED BY '$pw';
+ALTER USER $a IDENTIFIED BY '$pw';
+GRANT SELECT ON inacbg.grouping TO $a;
+GRANT SELECT ON inacbg.hasil_grouping TO $a;
+GRANT SELECT (TGL_REQUEST, ACCESS_FROM_IP) ON logs.bridge_log TO $a;
+GRANT SELECT ON bpjs.klaim TO $a;
 SQL
-  ); then
-    say "could not create the read-only account bpjs_mon (${err:0:200}): run $APP/setup.sh install in a terminal and enter the MySQL root password when asked"
-    return 1
-  fi
-  (umask 077; printf '[clientbpjsmon]\nuser=bpjs_mon\npassword=%s\nhost=localhost\n' "$pw" > $LOGIN)
-  account_ok && say "read-only account bpjs_mon created" || say "account bpjs_mon created but cannot read: check $APP/setup.sh install"
+    ); then err="creating $a failed: ${err:0:200}"; continue; fi
+    (umask 077; python3 - "$LOGIN" "$pw" "$host" "$port" "$sock" <<'PY2'
+import sys
+f, pw, host, port, sock = sys.argv[1:6]
+lines = ["[clientbpjsmon]", "user=bpjs_mon", "password=" + pw]
+if sock and host in ("", "localhost"): lines += ["host=localhost", "socket=" + sock]
+else: lines.append("host=" + (host or "localhost"))
+if port and host not in ("", "localhost"): lines.append("port=" + port)
+open(f, "w").write("\n".join(lines) + "\n")
+PY2
+    )
+    if account_ok; then say "read-only account bpjs_mon created as $a, connecting through $where"; return 0; fi
+    err="bpjs_mon was created as $a but cannot read through $where: $(ro -N -e 'SELECT 1' 2>&1 | grep -m1 ERROR)"
+  done < <(ro_endpoints)
+  say "the read-only account bpjs_mon does not work (${err:-no way to reach the SIMGOS database}): send Tatareka the output of $APP/setup.sh status"
+  return 1
 }
 
 webgroup() {   # PHP-FPM's group: api.php runs as it, whatever the web server (apache on RHEL)
