@@ -9,7 +9,8 @@ Update status klaim BPJS di SIMGOS otomatis setiap malam, plus **Dashboard Klaim
     dnf install https://repo.tatareka.com/tatareka-release.rpm
     dnf install tatareka-bpjs-monitoring
 
-User SIMGOS akan melihat **Monitoring › Dashboard Klaim BPJS** setelah login ulang.
+User SIMGOS yang punya hak akses **DASHBOARD KLAIM BPJS** akan melihat **Monitoring › Dashboard Klaim BPJS** setelah
+login ulang. Saat pertama dipasang, hak akses ini diberikan ke user group **Admin SIMRS** yang bisa membuka Monitoring.
 
 ## Usage
 
@@ -27,6 +28,9 @@ User SIMGOS akan melihat **Monitoring › Dashboard Klaim BPJS** setelah login u
 ## Setting
 
 - Matikan cek malam: `refresh = off` di `/etc/tatareka-bpjs-monitoring/monitoring.ini`
-- Sembunyikan menu: `"enabled": false` di `aplikasi.properti_config` ID 909902
+- Siapa yang melihat menu: hak akses **DASHBOARD KLAIM BPJS** (modul 909802, di PLUGINS › TATAREKA KLAIM). Centang di
+  Manajemen Pengguna untuk group (Group Pengguna Akses Modul), lalu di akses modul tiap user yang perlu, seperti hak akses
+  SIMGOS lainnya; berlaku setelah user login ulang. Update paket tidak mengubah siapa yang memegangnya.
+- Sembunyikan menu untuk semua user: `"enabled": false` di `aplikasi.properti_config` ID 909902
 
 Apache-2.0 · PT Tatareka Sistem Hidup

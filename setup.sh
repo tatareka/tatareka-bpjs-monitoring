@@ -1,9 +1,10 @@
 #!/bin/bash
 # tatareka-bpjs-monitoring setup. Run by the RPM (%post install, %preun remove); safe to run again at any time.
 #
-#   setup.sh install   read-only MySQL account bpjs_mon, the "Dashboard Klaim BPJS" screen in SIMGOS, the timers
-#   setup.sh remove    take the screen out of SIMGOS and stop the timers (files are removed by rpm; the account stays,
-#                      it can only read)
+#   setup.sh install   read-only MySQL account bpjs_mon, the "Dashboard Klaim BPJS" screen in SIMGOS and the access
+#                      right for it, the timers
+#   setup.sh remove    take the screen, the access right and its grants out of SIMGOS and stop the timers (files are
+#                      removed by rpm; the account stays, it can only read)
 #
 # The account bpjs_mon may read which claims are final and their value (inacbg.grouping, inacbg.hasil_grouping), BPJS's
 # status and amounts as SIMGOS stored them (bpjs.klaim) and two columns of SIMGOS's BPJS call log (when, and from which
@@ -22,6 +23,14 @@ WS_CACHE=/var/www/html/production/webapps/webservice/data/cache
 PC_ID=909902
 PC_VALUE='{"enabled": true, "package": "BpjsMonitoring"}'
 API_URL=/apps/tatareka-bpjs-monitoring/api.php
+# Who sees the screen is a SIMGOS access right, added the way SIMGOS's own plugins add theirs: a heading under
+# 90 PLUGINS (shared with tatareka-ai-klaim, whose right is 909801) and under it the right itself. Neither row has a
+# screen (no CLASS, no CONFIG), so nothing new shows in SIMGOS except in the access trees of Manajemen Pengguna.
+# BpjsMonitoring.js and api.php carry the same ID.
+IZ_HEAD=9098; IZ_HEAD_NAME="TATAREKA KLAIM"
+IZ_ID=909802; IZ_NAME="DASHBOARD KLAIM BPJS"
+IZ_GROUP="Admin SIMRS"   # SIMGOS group (master.referensi JENIS 43) whose users get the right when it is first added
+IZ_MON=26                # SIMGOS's own module MONITORING, where the menu is
 say() { echo "tatareka-bpjs-monitoring: $*"; }
 
 ADMIN=""
@@ -128,6 +137,99 @@ install_hook() {
   say "SIMGOS: screen registered (properti_config $PC_ID); users see Monitoring > Dashboard Klaim BPJS at their next login"
 }
 
+izin_state() {   # ok | absent | partial (heading only) | noplugins | taken (an ID belongs to something else) | unknown
+  local r
+  r=$(db -e "SELECT CONCAT(ID, '=', NAMA) FROM aplikasi.modules WHERE ID IN ('90', '$IZ_HEAD', '$IZ_ID') ORDER BY ID" 2>/dev/null) || { echo unknown; return; }
+  case $r in
+    "90=PLUGINS") echo absent ;;
+    "90=PLUGINS"$'\n'"$IZ_HEAD=$IZ_HEAD_NAME") echo partial ;;
+    "90=PLUGINS"$'\n'"$IZ_HEAD=$IZ_HEAD_NAME"$'\n'"$IZ_ID=$IZ_NAME") echo ok ;;
+    ""|"$IZ_HEAD="*|"$IZ_ID="*) echo noplugins ;;
+    *) echo taken ;;
+  esac
+}
+
+# Adds the two rows where they are missing and, in the same transaction, gives the right to the hospital's SIMGOS
+# admins: to the group $IZ_GROUP, and to those of its active users who can open Monitoring through that group. A user
+# in SIMGOS holds a right through two rows (the group's and their own), so both are written, the heading's included,
+# as Manajemen Pengguna does. Only rows that do not exist are inserted; none is changed. This runs once, when the
+# right is first added: later installs and updates give it to nobody, so what the hospital ticks or unticks stays.
+sql_izin() {
+  cat <<SQL
+START TRANSACTION;
+INSERT INTO aplikasi.modules (ID, NAMA, LEVEL, DESKRIPSI, STATUS, CLASS, HAVE_CHILD, MENU_HOME, MENU_MASTER, PACKAGE_NAME, INTERNAL_PACKAGE)
+SELECT '$IZ_HEAD', '$IZ_HEAD_NAME', 2, 'Tatareka Klaim', 1, NULL, 1, 0, 0, NULL, 0 FROM DUAL
+ WHERE NOT EXISTS (SELECT 1 FROM aplikasi.modules WHERE ID = '$IZ_HEAD');
+INSERT INTO aplikasi.modules (ID, NAMA, LEVEL, DESKRIPSI, STATUS, CLASS, HAVE_CHILD, MENU_HOME, MENU_MASTER, PACKAGE_NAME, INTERNAL_PACKAGE)
+SELECT '$IZ_ID', '$IZ_NAME', 3, 'Dashboard Klaim BPJS di Monitoring: klaim final dan statusnya di BPJS (rpm tatareka-bpjs-monitoring)', 1, NULL, 0, 0, 0, NULL, 0 FROM DUAL
+ WHERE NOT EXISTS (SELECT 1 FROM aplikasi.modules WHERE ID = '$IZ_ID');
+SET @g = (SELECT ID FROM master.referensi WHERE JENIS = 43 AND STATUS = 1 AND TRIM(DESKRIPSI) = '$IZ_GROUP' ORDER BY ID LIMIT 1);
+INSERT INTO aplikasi.group_pengguna_akses_module (GROUP_PENGGUNA, MODUL, STATUS)
+SELECT @g, m.ID, 1 FROM aplikasi.modules m
+ WHERE m.ID IN ('$IZ_HEAD', '$IZ_ID') AND @g IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM aplikasi.group_pengguna_akses_module x WHERE x.GROUP_PENGGUNA = @g AND x.MODUL = m.ID);
+INSERT INTO aplikasi.pengguna_akses (PENGGUNA, GROUP_PENGGUNA_AKSES_MODULE, STATUS)
+SELECT u.PENGGUNA, g.ID, 1
+  FROM (SELECT DISTINCT pa.PENGGUNA
+          FROM aplikasi.pengguna_akses pa
+          JOIN aplikasi.group_pengguna_akses_module gm ON gm.ID = pa.GROUP_PENGGUNA_AKSES_MODULE
+          JOIN aplikasi.pengguna p ON p.ID = pa.PENGGUNA
+         WHERE pa.STATUS = 1 AND gm.STATUS = 1 AND gm.GROUP_PENGGUNA = @g AND gm.MODUL = '$IZ_MON' AND p.STATUS = 1) u
+  JOIN aplikasi.group_pengguna_akses_module g ON g.GROUP_PENGGUNA = @g AND g.MODUL IN ('$IZ_HEAD', '$IZ_ID') AND g.STATUS = 1
+ WHERE NOT EXISTS (SELECT 1 FROM aplikasi.pengguna_akses x WHERE x.PENGGUNA = u.PENGGUNA AND x.GROUP_PENGGUNA_AKSES_MODULE = g.ID);
+COMMIT;
+SQL
+}
+
+# Takes the right out again: the grants of it first, then the row; the heading only when nothing else is under it.
+# Every statement names the row by ID and by name, so a row that is not this package's is never touched.
+sql_izin_drop() {
+  local w n=0
+  echo "USE aplikasi;"   # MySQL resolves the alias after DELETE against the default database (error 1046 without one)
+  echo "START TRANSACTION;"
+  for w in "m.ID = '$IZ_ID' AND m.NAMA = '$IZ_NAME'" "m.ID = '$IZ_HEAD' AND m.NAMA = '$IZ_HEAD_NAME' AND @lain = 0"; do
+    [ $((n++)) -eq 0 ] || echo "SET @lain = (SELECT COUNT(*) FROM aplikasi.modules WHERE ID LIKE '$IZ_HEAD%' AND ID <> '$IZ_HEAD');"
+    echo "DELETE pa FROM aplikasi.pengguna_akses pa JOIN aplikasi.group_pengguna_akses_module g ON g.ID = pa.GROUP_PENGGUNA_AKSES_MODULE JOIN aplikasi.modules m ON m.ID = g.MODUL WHERE $w;"
+    echo "DELETE g FROM aplikasi.group_pengguna_akses_module g JOIN aplikasi.modules m ON m.ID = g.MODUL WHERE $w;"
+    echo "DELETE m FROM aplikasi.modules m WHERE $w;"
+  done
+  echo "COMMIT;"
+}
+
+izin_holders() {   # logins the right lets through: the rule of SIMGOS's own login, active users only
+  local r
+  r=$(db -e "SELECT GROUP_CONCAT(DISTINCT p.LOGIN ORDER BY p.LOGIN SEPARATOR ', ')
+    FROM aplikasi.group_pengguna_akses_module g
+    JOIN aplikasi.pengguna_akses pa ON pa.GROUP_PENGGUNA_AKSES_MODULE = g.ID AND pa.STATUS = 1
+    JOIN aplikasi.pengguna p ON p.ID = pa.PENGGUNA AND p.STATUS = 1
+    WHERE g.MODUL = '$IZ_ID' AND g.STATUS = 1" 2>/dev/null)
+  case $r in ""|NULL) echo "nobody yet" ;; *) echo "$r" ;; esac
+}
+IZ_HOW="SIMGOS, Manajemen Pengguna: tick PLUGINS > $IZ_HEAD_NAME > $IZ_NAME for a group (Group Pengguna Akses Modul), then in the access of each user who should have it"
+
+install_izin() {
+  admin || { say "no MySQL login to add the access right $IZ_ID \"$IZ_NAME\" to SIMGOS, so nobody sees the screen: run $APP/setup.sh install in a terminal"; return 1; }
+  local st err h; st=$(izin_state)
+  case $st in
+    absent|partial)
+      if err=$(sql_izin | db 2>&1) && [ "$(izin_state)" = ok ]; then
+        rm -rf "${WS_CACHE:?}"/* 2>/dev/null
+        h=$(izin_holders)
+        say "access right: $IZ_ID \"$IZ_NAME\" added to SIMGOS (PLUGINS > $IZ_HEAD_NAME): the screen now shows only for users who hold it"
+        if [ "$h" = "nobody yet" ]; then
+          say "access right: nobody holds it yet (no group \"$IZ_GROUP\", or none of its users can open Monitoring). To give it: $IZ_HOW"
+        else
+          say "access right: given to the users of the group \"$IZ_GROUP\" who can open Monitoring: $h"
+          say "access right: for anyone else: $IZ_HOW. It shows at their next login"
+        fi
+      else say "adding the access right $IZ_ID \"$IZ_NAME\" to SIMGOS failed (${err:0:200}), so nobody sees the screen: run $APP/setup.sh install again"; return 1; fi ;;
+    ok) say "access right: $IZ_ID \"$IZ_NAME\" present (grants unchanged), held by: $(izin_holders)" ;;
+    noplugins) say "SIMGOS has no module 90 PLUGINS to put the access right $IZ_ID \"$IZ_NAME\" under, so nobody sees the screen: tell Tatareka"; return 1 ;;
+    taken) say "module ID $IZ_HEAD or $IZ_ID already belongs to something else in SIMGOS, so the access right \"$IZ_NAME\" could not be added and nobody sees the screen: tell Tatareka"; return 1 ;;
+    *) say "SIMGOS's modules could not be read, so the access right $IZ_ID \"$IZ_NAME\" was not checked"; return 1 ;;
+  esac
+}
+
 web_check() {   # what a browser on this server gets: the script (200) and the endpoint without a login (401)
   local js api
   js=$(curl -skL -o /dev/null --max-time 10 -w '%{http_code}' "http://127.0.0.1/apps/SIMpel/packages/classic/BpjsMonitoring.js")
@@ -143,6 +245,7 @@ case "${1:-}" in
     chgrp "$(webgroup)" $DATA
     install_account
     install_hook
+    install_izin
     systemctl daemon-reload >/dev/null 2>&1
     if systemctl is-active --quiet httpd && apachectl configtest >/dev/null 2>&1; then systemctl reload httpd; fi
     systemctl enable --now tatareka-bpjs-monitoring.timer tatareka-bpjs-monitoring-dashboard.timer >/dev/null 2>&1 \
@@ -156,6 +259,14 @@ case "${1:-}" in
     if admin && db -e "DELETE FROM aplikasi.properti_config WHERE ID=$PC_ID" 2>/dev/null; then
       rm -rf "${WS_CACHE:?}"/* 2>/dev/null; say "SIMGOS: screen removed (properti_config $PC_ID)"
     else say "could not delete properti_config $PC_ID: delete it by hand"; fi
+    case $(izin_state) in ok)
+      sql_izin_drop | db >/dev/null 2>&1
+      case $(izin_state) in
+        absent)  say "SIMGOS: access right $IZ_ID and its grants removed" ;;
+        partial) say "SIMGOS: access right $IZ_ID and its grants removed (heading $IZ_HEAD stays: another package's right is under it)" ;;
+        *)       say "could not remove the access right $IZ_ID from SIMGOS: untick and delete it by hand (aplikasi.modules)" ;;
+      esac ;;
+    esac
     say "timers stopped (the read-only account bpjs_mon and $DATA stay)"
     ;;
   *) sed -n '2,5p' "$0"; exit 1 ;;

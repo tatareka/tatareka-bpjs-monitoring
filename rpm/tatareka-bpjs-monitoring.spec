@@ -63,6 +63,10 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/%{name}
 
 %changelog
+* Sat Nov 21 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112101
+- SIMGOS access right DASHBOARD KLAIM BPJS (909802, PLUGINS > TATAREKA KLAIM): only users who hold it see the menu
+  item, and api.php answers 403 without it. First install gives it to the Admin SIMRS users who can open Monitoring;
+  updates never change who holds it. Users outside Admin SIMRS lose the menu until it is ticked for their group and user.
 * Fri Nov 20 2026 Yanuar Aristya <aris@tatareka.com> - 1.0.0-26112003
 - bpjs_mon's login file is read with --defaults-file, so only it counts (1.0.0-26112002 let a [client] login in root's
   /root/.my.cnf override it).

@@ -8,6 +8,12 @@
     if (window.TtrkBpjsMonLoaded) return;
     window.TtrkBpjsMonLoaded = true;
     var API = '/apps/tatareka-bpjs-monitoring/api.php';
+    // SIMGOS access right DASHBOARD KLAIM BPJS (aplikasi.modules, registered by setup.sh; the same ID is in api.php).
+    // Asked the way SIMGOS's own screens ask; the rights are those of the user's login.
+    var RIGHT = '909802';
+    function allowed() {
+        try { return webservice.app.xpriv(RIGHT, false) === true; } catch (e) { return false; }
+    }
 
     var STATUS = {   // order = how they are listed
         pending: ['Pending', '#ca6f1e'], tidak_layak: ['Tidak layak', '#c0392b'], verifikasi: ['Proses verifikasi', '#2e86c1'],
@@ -172,6 +178,8 @@
                 failure: function (resp) {
                     me.setLoading(false);
                     var msg = {401: 'Sesi SIMGOS sudah berakhir. Silakan login ulang.',
+                               403: 'Akun Anda tidak memiliki hak akses DASHBOARD KLAIM BPJS di SIMGOS (Manajemen Pengguna, ' +
+                                    'PLUGINS > TATAREKA KLAIM).',
                                404: 'Dashboard Klaim BPJS belum aktif di server SIMGOS (alamat ' + API + ' tidak ditemukan). ' +
                                     'Minta tim IT menjalankan /opt/tatareka-bpjs-monitoring/setup.sh install.',
                                503: 'Data belum tersedia atau SIMGOS sedang sibuk. Coba lagi sebentar lagi.'}[resp.status] ||
@@ -262,14 +270,15 @@
     /*
      * SIMGOS's Monitoring module (monitoring.Workspace, packages/classic/monitoring.js) builds its left menu and then
      * calls addMenus(), an empty hook. "Dashboard Klaim BPJS" is added there, after "AI Klaim" when that is installed. The
-     * override calls the previous one first (callParent), so other packages' items stay, whichever loads first.
+     * override calls the previous one first (callParent), so other packages' items stay, whichever loads first. Only
+     * users who hold the access right DASHBOARD KLAIM BPJS get the item.
      */
     Ext.ClassManager.onCreated(function () {
         Ext.override(Ext.ClassManager.get('monitoring.Workspace'), {
             addMenus: function () {
                 var r = this.callParent(arguments);
                 var f = this.down('com-form'), menus = f && f.menuConfig && f.menuConfig.menus;
-                if (menus && !menus.some(function (m) { return m.className === 'TtrkBpjsMon.Dashboard'; })) {
+                if (menus && allowed() && !menus.some(function (m) { return m.className === 'TtrkBpjsMon.Dashboard'; })) {
                     var at = menus.some(function (m) { return m.className === 'SimgosAi.Worklist'; }) ? 1 : 0;
                     menus = menus.slice();
                     menus.splice(at, 0, {text: 'Dashboard Klaim BPJS', leaf: true, iconCls: 'x-fa fa-tachometer',

@@ -5,7 +5,8 @@
  *   GET ?action=dashboard   the claims and their BPJS status (dashboard.json, rebuilt every 15 minutes by root)
  *
  * Auth: the browser's SIMGOS session cookie is forwarded to /webservice/authentication/isAuthenticate; no valid
- * session -> 401. Read-only: this file only reads dashboard.json.
+ * session -> 401. The user must hold the SIMGOS access right DASHBOARD KLAIM BPJS (module 909802, registered by
+ * setup.sh, granted in Manajemen Pengguna); without it -> 403. Read-only: this file only reads dashboard.json.
  */
 declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
@@ -13,6 +14,7 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
 const DATA = '/var/lib/tatareka-bpjs-monitoring/dashboard.json';
+const RIGHT = '909802';   // aplikasi.modules ID of the access right; the same ID is in BpjsMonitoring.js and setup.sh
 
 function out(array $d, int $code = 200): never { http_response_code($code); echo json_encode($d, JSON_UNESCAPED_UNICODE); exit; }
 function fail(int $code, string $msg): never { out(['success' => false, 'message' => $msg], $code); }
@@ -33,6 +35,11 @@ function logged_in(): void {
     }
     if ($r === null) fail(503, 'SIMGOS sedang sibuk, coba lagi sebentar');
     if (empty($r['success']) || empty($r['data']['ID'])) fail(401, 'Sesi SIMGOS tidak valid');
+    // XPRIV: the module IDs this user holds. SIMGOS reads them from its two grant tables at every isAuthenticate, so
+    // a right given or taken away in Manajemen Pengguna counts at the next request, without a new login.
+    $xpriv = $r['data']['XPRIV'] ?? null;
+    if (!is_array($xpriv) || !isset($xpriv[RIGHT]))
+        fail(403, 'Akun Anda tidak memiliki hak akses DASHBOARD KLAIM BPJS di SIMGOS (Manajemen Pengguna, PLUGINS > TATAREKA KLAIM)');
 }
 
 $action = (string) ($_GET['action'] ?? '');
